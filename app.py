@@ -5,9 +5,12 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from scipy.spatial.distance import cdist
 from sklearn.metrics.pairwise import cosine_similarity
 import plotly.express as px
+import zipfile
 
-# Load your data
-data = pd.read_csv("data.csv")
+# Load your data from archive.zip
+with zipfile.ZipFile("archive.zip", 'r') as zip_ref:
+    with zip_ref.open("data.csv") as file:
+        data = pd.read_csv(file)
 
 # Columns used for similarity calculations
 number_cols = [
@@ -42,11 +45,8 @@ def get_mean_vector(song_list, data):
 
 # Hybrid similarity with weighted features
 def hybrid_similarity_with_weights(song_center, scaled_data, weights):
-    # Apply weights to the song center and scaled data
     weighted_center = song_center * weights
     weighted_data = scaled_data * weights
-    
-    # Calculate Euclidean and Cosine distances
     euclidean_distances = cdist([weighted_center], weighted_data, 'euclidean')
     cosine_similarities = cosine_similarity([weighted_center], weighted_data)
     hybrid_scores = 0.5 * (1 - cosine_similarities) + 0.5 * euclidean_distances
@@ -59,11 +59,9 @@ def recommend_songs(seed_songs, data, n_recommendations=10, weights=None):
     if song_center is None:
         return []
 
-    # Scale and standardize the song center vector
     normalized_song_center = min_max_scaler.transform([song_center])
     scaled_normalized_song_center = standard_scaler.transform(normalized_song_center)[0]
 
-    # Calculate hybrid similarity scores with weights
     hybrid_scores = hybrid_similarity_with_weights(scaled_normalized_song_center, scaled_normalized_data, weights)
     indices = np.argsort(hybrid_scores)
 
@@ -107,7 +105,6 @@ weights = {}
 for col in number_cols:
     weights[col] = st.slider(f"Weight for {col}", 0.0, 2.0, 1.0)
 
-# Normalize weights to ensure they are on a consistent scale
 weights_array = np.array([weights[col] for col in number_cols])
 weights_array = weights_array / np.linalg.norm(weights_array)
 
