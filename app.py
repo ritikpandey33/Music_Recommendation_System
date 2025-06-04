@@ -8,92 +8,32 @@ import plotly.express as px
 import zipfile
 import os
 
-# Page configuration
-st.set_page_config(page_title="Music Recommender", layout="wide")
-
-# Function to load data safely with zip extraction
+# Function to load data with zip extraction
 @st.cache_data
-def load_data_safely():
-    """Load data with comprehensive error handling and zip extraction"""
+def load_data():
+    """Load data with zip extraction if needed"""
+    # Try direct CSV first
+    if os.path.exists("data.csv"):
+        return pd.read_csv("data.csv")
     
-    # Show current directory for debugging
-    current_dir = os.getcwd()
-    files_in_dir = os.listdir(current_dir)
+    # Try zip extraction
+    if os.path.exists("archive.zip"):
+        with zipfile.ZipFile("archive.zip", 'r') as zip_ref:
+            zip_ref.extractall(".")
+            csv_files = [f for f in zip_ref.namelist() if f.endswith('.csv')]
+            if csv_files:
+                return pd.read_csv(csv_files[0])
     
-    st.info("🔍 Checking for data files...")
-    st.write(f"Current directory: {current_dir}")
-    st.write(f"Files found: {files_in_dir}")
+    # Try other common names
+    for filename in ["music_data.csv", "songs.csv", "spotify_data.csv"]:
+        if os.path.exists(filename):
+            return pd.read_csv(filename)
     
-    # Method 1: Try to load data.csv directly
-    if "data.csv" in files_in_dir:
-        try:
-            st.info("📂 Found data.csv, loading...")
-            data = pd.read_csv("data.csv")
-            st.success(f"✅ Successfully loaded data.csv! Shape: {data.shape}")
-            return data
-        except Exception as e:
-            st.warning(f"❌ Could not load data.csv: {str(e)}")
-    
-    # Method 2: Try to extract from archive.zip
-    if "archive.zip" in files_in_dir:
-        try:
-            st.info("📦 Found archive.zip, extracting...")
-            with zipfile.ZipFile("archive.zip", 'r') as zip_ref:
-                file_list = zip_ref.namelist()
-                st.write(f"Files in archive: {file_list}")
-                
-                # Extract all files
-                zip_ref.extractall(".")
-                st.success("✅ Files extracted successfully!")
-                
-                # Look for CSV files
-                csv_files = [f for f in file_list if f.endswith('.csv')]
-                
-                if csv_files:
-                    csv_file = csv_files[0]
-                    st.info(f"📊 Loading CSV file: {csv_file}")
-                    data = pd.read_csv(csv_file)
-                    st.success(f"✅ Data loaded successfully! Shape: {data.shape}")
-                    return data
-                else:
-                    st.error("❌ No CSV files found in archive.zip")
-                    return None
-                    
-        except Exception as e:
-            st.error(f"❌ Error processing archive.zip: {str(e)}")
-            return None
-    
-    # Method 3: Try different possible filenames
-    possible_files = ["data.csv", "music_data.csv", "songs.csv", "spotify_data.csv"]
-    for filename in possible_files:
-        if filename in files_in_dir:
-            try:
-                st.info(f"📂 Trying to load {filename}...")
-                data = pd.read_csv(filename)
-                st.success(f"✅ Successfully loaded {filename}! Shape: {data.shape}")
-                return data
-            except Exception as e:
-                st.warning(f"❌ Could not load {filename}: {str(e)}")
-                continue
-    
-    # If nothing works, show error
-    st.error("❌ No valid data file found!")
-    st.error("Please ensure one of the following exists in your repository:")
-    st.error("- data.csv")
-    st.error("- archive.zip containing a CSV file")
-    
-    return None
+    st.error("No data file found!")
+    st.stop()
 
 # Load data
-try:
-    data = load_data_safely()
-    
-    if data is None:
-        st.stop()
-        
-except Exception as e:
-    st.error(f"Critical error loading data: {str(e)}")
-    st.stop()
+data = load_data()
 
 # Columns used for similarity calculations
 number_cols = [
@@ -101,21 +41,6 @@ number_cols = [
     'energy', 'explicit', 'instrumentalness', 'key', 'liveness', 'loudness',
     'mode', 'popularity', 'speechiness', 'tempo'
 ]
-
-# Check which columns actually exist
-available_cols = [col for col in number_cols if col in data.columns]
-missing_cols = [col for col in number_cols if col not in data.columns]
-
-if missing_cols:
-    st.warning(f"⚠️ Some expected columns are missing: {missing_cols}")
-    st.info(f"✅ Using available columns: {available_cols}")
-
-if len(available_cols) < 5:
-    st.error("❌ Not enough numeric columns for recommendations. Need at least 5 columns.")
-    st.stop()
-
-# Use available columns for processing
-number_cols = available_cols
 
 # Scale and standardize the numerical features
 min_max_scaler = MinMaxScaler()
@@ -240,15 +165,14 @@ fig_popularity.update_layout(showlegend=False, height=1000, width=1000)
 st.plotly_chart(fig_popularity)
 
 # Songs per decade
-if 'release_date' in data.columns:
-    data['release_date'] = pd.to_datetime(data['release_date'], errors='coerce')
-    data['release_decade'] = (data['release_date'].dt.year // 10) * 10
-    decade_counts = data['release_decade'].value_counts().sort_index()
+data['release_date'] = pd.to_datetime(data['release_date'], errors='coerce')
+data['release_decade'] = (data['release_date'].dt.year // 10) * 10
+decade_counts = data['release_decade'].value_counts().sort_index()
 
-    st.subheader('Number of Songs per Decade')
-    fig_decades = px.bar(x=decade_counts.index, y=decade_counts.values, labels={'x': 'Decade', 'y': 'Number of Songs'}, title='Number of Songs per Decade', color=decade_counts.values)
-    fig_decades.update_layout(xaxis_type='category', height=1000, width=1000)
-    st.plotly_chart(fig_decades)
+st.subheader('Number of Songs per Decade')
+fig_decades = px.bar(x=decade_counts.index, y=decade_counts.values, labels={'x': 'Decade', 'y': 'Number of Songs'}, title='Number of Songs per Decade', color=decade_counts.values)
+fig_decades.update_layout(xaxis_type='category', height=1000, width=1000)
+st.plotly_chart(fig_decades)
 
 # Distribution of song attributes
 st.subheader('Distribution of Song Attributes')
