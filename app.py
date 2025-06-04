@@ -11,13 +11,10 @@ import os
 # Page configuration
 st.set_page_config(page_title="Music Recommender", layout="wide")
 
-# Title first
-st.title('🎵 Music Recommender with Weighted Features')
-
-# Function to load data safely
+# Function to load data safely with zip extraction
 @st.cache_data
 def load_data_safely():
-    """Load data with comprehensive error handling and debugging"""
+    """Load data with comprehensive error handling and zip extraction"""
     
     # Show current directory for debugging
     current_dir = os.getcwd()
@@ -98,312 +95,172 @@ except Exception as e:
     st.error(f"Critical error loading data: {str(e)}")
     st.stop()
 
-# Display data info
-st.success(f"🎵 Loaded {len(data)} songs successfully!")
-st.write(f"**Columns available:** {', '.join(data.columns.tolist())}")
-
-# Define required columns for similarity calculations
-default_number_cols = [
+# Columns used for similarity calculations
+number_cols = [
     'valence', 'year', 'acousticness', 'danceability', 'duration_ms',
     'energy', 'explicit', 'instrumentalness', 'key', 'liveness', 'loudness',
     'mode', 'popularity', 'speechiness', 'tempo'
 ]
 
 # Check which columns actually exist
-number_cols = [col for col in default_number_cols if col in data.columns]
-missing_cols = [col for col in default_number_cols if col not in data.columns]
+available_cols = [col for col in number_cols if col in data.columns]
+missing_cols = [col for col in number_cols if col not in data.columns]
 
 if missing_cols:
     st.warning(f"⚠️ Some expected columns are missing: {missing_cols}")
-    st.info(f"✅ Using available columns: {number_cols}")
+    st.info(f"✅ Using available columns: {available_cols}")
 
-if len(number_cols) < 5:
+if len(available_cols) < 5:
     st.error("❌ Not enough numeric columns for recommendations. Need at least 5 columns.")
     st.stop()
 
-# Initialize scalers and data preprocessing
-@st.cache_data
-def prepare_data(data_df, cols):
-    """Prepare and scale the data for similarity calculations"""
-    try:
-        # Fill any missing values
-        data_clean = data_df[cols].fillna(data_df[cols].mean())
-        
-        # Scale the data
-        min_max_scaler = MinMaxScaler()
-        standard_scaler = StandardScaler()
-        
-        normalized_data = min_max_scaler.fit_transform(data_clean)
-        scaled_normalized_data = standard_scaler.fit_transform(normalized_data)
-        
-        return min_max_scaler, standard_scaler, scaled_normalized_data, data_clean
-        
-    except Exception as e:
-        st.error(f"Error preparing data: {str(e)}")
-        return None, None, None, None
+# Use available columns for processing
+number_cols = available_cols
 
-# Prepare the data
-min_max_scaler, standard_scaler, scaled_normalized_data, clean_data = prepare_data(data, number_cols)
+# Scale and standardize the numerical features
+min_max_scaler = MinMaxScaler()
+standard_scaler = StandardScaler()
+normalized_data = min_max_scaler.fit_transform(data[number_cols])
+scaled_normalized_data = standard_scaler.fit_transform(normalized_data)
 
-if min_max_scaler is None:
-    st.error("❌ Failed to prepare data for processing")
-    st.stop()
-
-# Rest of the functions
+# Function to retrieve song data
 def get_song_data(name, data):
-    """Get song data by name"""
     try:
-        matches = data[data['name'].str.lower().str.contains(name.lower(), na=False)]
-        if not matches.empty:
-            return matches.iloc[0]
-        return None
-    except Exception:
+        return data[data['name'].str.lower() == name].iloc[0]
+    except IndexError:
         return None
 
+# Calculate mean vector of seed songs
 def get_mean_vector(song_list, data):
-    """Calculate mean vector of seed songs"""
     song_vectors = []
     for song in song_list:
         song_data = get_song_data(song['name'], data)
-        if song_data is not None:
-            try:
-                song_vector = song_data[number_cols].values
-                song_vectors.append(song_vector)
-            except Exception:
-                continue
-    
-    if song_vectors:
-        return np.mean(song_vectors, axis=0)
-    return None
+        if song_data is None:
+            return None
+        song_vector = song_data[number_cols].values
+        song_vectors.append(song_vector)
+    return np.mean(song_vectors, axis=0)
 
+# Hybrid similarity with weighted features
 def hybrid_similarity_with_weights(song_center, scaled_data, weights):
-    """Calculate hybrid similarity with weights"""
-    try:
-        # Apply weights
-        weighted_center = song_center * weights
-        weighted_data = scaled_data * weights
-        
-        # Calculate distances
-        euclidean_distances = cdist([weighted_center], weighted_data, 'euclidean')
-        cosine_similarities = cosine_similarity([weighted_center], weighted_data)
-        hybrid_scores = 0.5 * (1 - cosine_similarities) + 0.5 * euclidean_distances
-        return hybrid_scores[0]
-    except Exception as e:
-        st.error(f"Error in similarity calculation: {str(e)}")
-        return np.array([])
+    # Apply weights to the song center and scaled data
+    weighted_center = song_center * weights
+    weighted_data = scaled_data * weights
+    
+    # Calculate Euclidean and Cosine distances
+    euclidean_distances = cdist([weighted_center], weighted_data, 'euclidean')
+    cosine_similarities = cosine_similarity([weighted_center], weighted_data)
+    hybrid_scores = 0.5 * (1 - cosine_similarities) + 0.5 * euclidean_distances
+    return hybrid_scores[0]
 
+# Recommendation function
 def recommend_songs(seed_songs, data, n_recommendations=10, weights=None):
-    """Generate song recommendations"""
-    try:
-        # Get required columns for metadata
-        metadata_cols = ['name']
-        if 'artists' in data.columns:
-            metadata_cols.append('artists')
-        if 'year' in data.columns:
-            metadata_cols.append('year')
-        
-        song_center = get_mean_vector(seed_songs, data)
-        if song_center is None:
-            return []
-
-        # Scale the song center
-        normalized_song_center = min_max_scaler.transform([song_center])
-        scaled_normalized_song_center = standard_scaler.transform(normalized_song_center)[0]
-
-        # Calculate similarity scores
-        hybrid_scores = hybrid_similarity_with_weights(scaled_normalized_song_center, scaled_normalized_data, weights)
-        
-        if len(hybrid_scores) == 0:
-            return []
-            
-        indices = np.argsort(hybrid_scores)
-
-        rec_songs = []
-        seed_song_names = [song['name'].lower() for song in seed_songs]
-        
-        for idx in indices:
-            if idx >= len(data):
-                continue
-                
-            song_name = data.iloc[idx]['name']
-            if (song_name.lower() not in seed_song_names and 
-                song_name.lower() not in [song.get('name', '').lower() for song in rec_songs]):
-                
-                song_data = {}
-                for col in metadata_cols:
-                    if col in data.columns:
-                        song_data[col] = data.iloc[idx][col]
-                
-                rec_songs.append(song_data)
-                if len(rec_songs) >= n_recommendations:
-                    break
-
-        return rec_songs
-        
-    except Exception as e:
-        st.error(f"Error in recommendation: {str(e)}")
+    metadata_cols = ['name', 'artists', 'year']
+    song_center = get_mean_vector(seed_songs, data)
+    if song_center is None:
         return []
 
-# Initialize session state
-if 'selected_songs' not in st.session_state:
-    st.session_state.selected_songs = []
+    # Scale and standardize the song center vector
+    normalized_song_center = min_max_scaler.transform([song_center])
+    scaled_normalized_song_center = standard_scaler.transform(normalized_song_center)[0]
 
-# UI Layout
-col1, col2 = st.columns([2, 1])
+    # Calculate hybrid similarity scores with weights
+    hybrid_scores = hybrid_similarity_with_weights(scaled_normalized_song_center, scaled_normalized_data, weights)
+    indices = np.argsort(hybrid_scores)
 
-with col1:
-    st.subheader("🔍 Search & Select Songs")
-    
-    song_input = st.text_input("Enter a song name:", placeholder="Start typing to search...")
-    
-    if song_input and len(song_input) > 2:
-        # Search for songs
-        try:
-            matches = data[data['name'].str.lower().str.contains(song_input.lower(), na=False)]
-            
-            if not matches.empty:
-                # Show top 10 matches
-                top_matches = matches.head(10)
-                
-                song_options = []
-                for _, row in top_matches.iterrows():
-                    artists = row.get('artists', 'Unknown Artist')
-                    year = row.get('year', 'Unknown Year')
-                    option_text = f"{row['name']} by {artists} ({year})"
-                    song_options.append((option_text, row['name']))
-                
-                if song_options:
-                    selected_option = st.radio("Choose a song:", [opt[0] for opt in song_options])
-                    
-                    if st.button("➕ Add to Selection"):
-                        selected_song_name = next(opt[1] for opt in song_options if opt[0] == selected_option)
-                        if selected_song_name not in st.session_state.selected_songs:
-                            st.session_state.selected_songs.append(selected_song_name)
-                            st.success(f"Added: {selected_song_name}")
-                            st.rerun()
-                        else:
-                            st.warning("Song already selected!")
-            else:
-                st.info("No songs found matching your search")
-                
-        except Exception as e:
-            st.error(f"Search error: {str(e)}")
+    rec_songs = []
+    for idx in indices:
+        song_name = data.iloc[idx]['name']
+        if song_name not in [song['name'] for song in seed_songs] and song_name not in [song['name'] for song in rec_songs]:
+            rec_songs.append(data.iloc[idx])
+            if len(rec_songs) == n_recommendations:
+                break
 
-with col2:
-    st.subheader("⚙️ Settings")
-    n_recommendations = st.slider("Number of recommendations:", 1, 20, 10)
-    
-    if st.button("🗑️ Clear All"):
-        st.session_state.selected_songs = []
-        st.rerun()
+    return pd.DataFrame(rec_songs)[metadata_cols].to_dict(orient='records')
 
-# Show selected songs
-if st.session_state.selected_songs:
-    st.subheader("🎵 Selected Songs:")
-    for i, song in enumerate(st.session_state.selected_songs):
-        col_song, col_remove = st.columns([5, 1])
-        with col_song:
-            st.write(f"{i+1}. **{song}**")
-        with col_remove:
-            if st.button("❌", key=f"remove_{i}"):
-                st.session_state.selected_songs.remove(song)
-                st.rerun()
+# Streamlit app structure
+st.title('Music Recommender with Weighted Features')
 
-# Feature weights
-st.subheader("🎛️ Customize Your Taste")
-st.write("Adjust these to personalize recommendations:")
+# Input for song names
+song_names = ""
+song_input = st.text_input("Enter a song name:")
+if song_input:
+    matching_songs = data[data['name'].str.lower().str.contains(song_input.lower())]
+    if not matching_songs.empty:
+        selected_song = st.radio(
+            "Select a song:",
+            matching_songs.apply(lambda x: f"{x['name']} by {x['artists']} ({x['year']})", axis=1).tolist()
+        )
+        if selected_song:
+            song_name = selected_song.split(" by ")[0]
+            song_names += f"\n{song_name}" if song_names else song_name
+            st.text_area("Selected songs:", value=song_names, disabled=True)
+    else:
+        st.warning("No matching songs found")
 
-# Create columns for weights
-n_cols = 3
-cols = st.columns(n_cols)
+# Number of recommendations
+n_recommendations = st.slider("Select the number of recommendations:", 1, 30, 10)
+input_song_names = song_names.strip().split('\n') if song_names else []
+
+# Weights for personalization
+st.subheader('Set Feature Weights for Personalization')
 weights = {}
+for col in number_cols:
+    weights[col] = st.slider(f"Weight for {col}", 0.0, 2.0, 1.0)
 
-for i, col in enumerate(number_cols):
-    with cols[i % n_cols]:
-        # User-friendly names
-        display_names = {
-            'valence': 'Happiness',
-            'acousticness': 'Acoustic',
-            'danceability': 'Danceability',
-            'energy': 'Energy',
-            'instrumentalness': 'Instrumental',
-            'tempo': 'Tempo',
-            'popularity': 'Popularity'
-        }
-        display_name = display_names.get(col, col.title())
-        weights[col] = st.slider(display_name, 0.0, 2.0, 1.0, step=0.1, key=f"weight_{col}")
-
-# Normalize weights
+# Normalize weights to ensure they are on a consistent scale
 weights_array = np.array([weights[col] for col in number_cols])
-weights_array = weights_array / (np.linalg.norm(weights_array) + 1e-8)  # Avoid division by zero
+weights_array = weights_array / np.linalg.norm(weights_array)
 
 # Recommendation button
-st.subheader("🚀 Get Recommendations")
-
-if st.button("Find Similar Songs", type="primary"):
-    if not st.session_state.selected_songs:
-        st.warning("Please select at least one song first!")
+if st.button('Recommend'):
+    seed_songs = [{'name': name.lower()} for name in input_song_names]
+    seed_songs = [song for song in seed_songs if song['name']]
+    if not seed_songs:
+        st.warning("Please enter at least one song name.")
     else:
-        with st.spinner("Finding recommendations..."):
-            seed_songs = [{'name': name} for name in st.session_state.selected_songs]
-            recommended_songs = recommend_songs(seed_songs, data, n_recommendations, weights_array)
-            
-            if recommended_songs:
-                st.success(f"Found {len(recommended_songs)} recommendations!")
-                
-                # Display recommendations
-                for i, song in enumerate(recommended_songs, 1):
-                    artists = song.get('artists', 'Unknown Artist')
-                    year = song.get('year', '')
-                    year_str = f" ({year})" if year else ""
-                    st.write(f"**{i}. {song['name']}** by *{artists}*{year_str}")
-                
-                # Create visualization if we have enough data
-                if len(recommended_songs) > 1:
-                    try:
-                        rec_df = pd.DataFrame(recommended_songs)
-                        fig = px.bar(
-                            rec_df,
-                            y='name',
-                            x=list(range(len(rec_df), 0, -1)),
-                            title="Your Recommendations",
-                            orientation='h'
-                        )
-                        fig.update_layout(
-                            xaxis_title="Rank",
-                            yaxis_title="Songs",
-                            height=max(400, len(rec_df) * 25)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    except Exception as e:
-                        st.info("Visualization unavailable")
-            else:
-                st.warning("No recommendations found. Try different songs or adjust weights.")
+        recommended_songs = recommend_songs(seed_songs, data, n_recommendations, weights_array)
+        if not recommended_songs:
+            st.warning("No recommendations available based on the provided songs.")
+        else:
+            recommended_df = pd.DataFrame(recommended_songs)
+            recommended_df['text'] = recommended_df.apply(lambda row: f"{row.name + 1}. {row['name']} by {row['artists']} ({row['year']})", axis=1)
+            fig = px.bar(recommended_df, y='name', x=range(len(recommended_df), 0, -1), title='Recommended Songs', orientation='h', color='name', text='text')
+            fig.update_layout(xaxis_title='Recommendation Rank', yaxis_title='Songs', showlegend=False, uniformtext_minsize=20, uniformtext_mode='show', yaxis_showticklabels=False, height=1000, width=1000)
+            fig.update_traces(width=1)
+            st.plotly_chart(fig)
 
-# Data insights
-st.header("📊 Dataset Insights")
+st.header('Music Data')
 
-try:
-    # Basic stats
-    st.write(f"**Total Songs:** {len(data):,}")
-    
-    if 'popularity' in data.columns:
-        st.subheader("🔥 Most Popular Songs")
-        top_songs = data.nlargest(10, 'popularity')[['name', 'popularity']]
-        if 'artists' in data.columns:
-            top_songs = data.nlargest(10, 'popularity')[['name', 'artists', 'popularity']]
-        st.dataframe(top_songs, use_container_width=True)
-    
-    # Feature distribution
-    if number_cols:
-        st.subheader("📈 Feature Distribution")
-        selected_feature = st.selectbox("Choose a feature:", number_cols)
-        
-        fig = px.histogram(data, x=selected_feature, title=f"Distribution of {selected_feature}")
-        st.plotly_chart(fig, use_container_width=True)
+# Display top songs by popularity
+st.subheader('Top Songs by Popularity')
+top_songs = data.nlargest(20, 'popularity')
+fig_popularity = px.bar(top_songs, x='popularity', y='name', orientation='h', title='Top Songs by Popularity', color='name')
+fig_popularity.update_layout(showlegend=False, height=1000, width=1000)
+st.plotly_chart(fig_popularity)
 
-except Exception as e:
-    st.info("Some visualizations unavailable")
+# Songs per decade
+if 'release_date' in data.columns:
+    data['release_date'] = pd.to_datetime(data['release_date'], errors='coerce')
+    data['release_decade'] = (data['release_date'].dt.year // 10) * 10
+    decade_counts = data['release_decade'].value_counts().sort_index()
 
-st.markdown("---")
-st.markdown("🎵 **Music Recommender** - Discover your next favorite songs!")
+    st.subheader('Number of Songs per Decade')
+    fig_decades = px.bar(x=decade_counts.index, y=decade_counts.values, labels={'x': 'Decade', 'y': 'Number of Songs'}, title='Number of Songs per Decade', color=decade_counts.values)
+    fig_decades.update_layout(xaxis_type='category', height=1000, width=1000)
+    st.plotly_chart(fig_decades)
+
+# Distribution of song attributes
+st.subheader('Distribution of Song Attributes')
+attribute_to_plot = st.selectbox('Select an attribute to plot:', number_cols)
+fig_histogram = px.histogram(data, x=attribute_to_plot, nbins=30, title=f'Distribution of {attribute_to_plot}')
+fig_histogram.update_layout(height=1000, width=1000)
+st.plotly_chart(fig_histogram)
+
+# Artists with the most songs
+st.subheader('Artists with Most Songs')
+top_artists = data['artists'].str.replace("[", "").str.replace("]", "").str.replace("'", "").value_counts().head(20)
+fig_top_artists = px.bar(top_artists, x=top_artists.index, y=top_artists.values, color=top_artists.index, labels={'x': 'Artist', 'y': 'Number of Songs'}, title='Top Artists with Most Songs')
+fig_top_artists.update_xaxes(categoryorder='total descending')
+fig_top_artists.update_layout(height=1000, width=1000, showlegend=False)
+st.plotly_chart(fig_top_artists)
